@@ -28,7 +28,7 @@ if OPENROUTER_API_KEY:
         base_url="https://openrouter.ai/api/v1",
     )
 
-MODEL = "meta-llama/llama-3.2-3b-instruct:free"
+MODEL = "google/gemma-4-31b-it:free"
 
 
 class CodeRequest(BaseModel):
