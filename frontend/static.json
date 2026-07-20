@@ -1,0 +1,7 @@
+web:
+  build:
+    command: cd frontend && npm install && npm run build
+    output: frontend/dist
+  serve:
+    name: frontend
+    url: /
