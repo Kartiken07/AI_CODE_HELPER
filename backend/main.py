@@ -5,7 +5,7 @@ from typing import Optional
 import os
 import json
 from dotenv import load_dotenv
-import google.generativeai as genai
+from openai import OpenAI
 
 load_dotenv()
 
@@ -19,10 +19,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel("gemini-2.0-flash")
+client = OpenAI(
+    api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1",
+)
+
+MODEL = "meta-llama/llama-3.1-8b-instruct:free"
 
 
 class CodeRequest(BaseModel):
@@ -47,22 +51,6 @@ class ChatRequest(BaseModel):
     code: str
     language: str
     analysis_context: Optional[dict] = None
-
-
-class ELI5Request(BaseModel):
-    code: str
-    language: str
-
-
-class SimilarProblemsRequest(BaseModel):
-    code: str
-    language: str
-    patterns: list[str]
-
-
-class MultiApproachRequest(BaseModel):
-    code: str
-    language: str
 
 
 class AnalysisResponse(BaseModel):
@@ -125,29 +113,15 @@ SYSTEM_PROMPT = """You are an expert code complexity analyzer. Analyze the given
     "learning_path": [
         {"topic": "Topic Name", "resource": "Article/Video/Tutorial", "url": "https://...", "difficulty": "beginner/intermediate/advanced", "description": "What you'll learn", "relevance": "How it relates to this code"}
     ],
-    "eli5_explanation": "Explain this code like explaining to a 5-year old. Use simple analogies, everyday examples, and avoid jargon. Make it fun and relatable.",
+    "eli5_explanation": "Explain this code like explaining to a 5-year old.",
     "similar_problems": [
         {"name": "Problem Name", "platform": "leetcode/gfg", "difficulty": "Easy/Medium/Hard", "url": "https://...", "pattern": "Pattern used", "description": "Brief description", "similarity_reason": "Why this is similar"}
     ],
     "multi_approaches": [
         {"name": "Approach Name", "code": "implementation code", "time_complexity": "O(n)", "space_complexity": "O(n)", "explanation": "How this approach works", "pros": ["pros"], "cons": ["cons"], "best_for": "When to use this"}
     ],
-    "flowchart": "Mermaid flowchart syntax string representing the code logic"
+    "flowchart": "Mermaid flowchart syntax string"
 }
-
-For flowchart: use Mermaid.js syntax (e.g., flowchart TD, A[Start] --> B{Decision}, etc.)
-
-For multi_approaches: provide 2-4 different approaches to solve the same problem with tradeoffs.
-
-For eli5_explanation: be creative and use real-world analogies (cooking, sports, games, etc.)
-
-For similar_problems: find 4-6 related problems from LeetCode and GFG.
-
-For learning_path: suggest 3-5 resources (articles, videos, tutorials) with URLs.
-
-For difficulty_estimate: rate 1-5 for LeetCode (Easy=1-2, Medium=3, Hard=4-5).
-
-For graph data: O(1)=1, O(log n)=log2(n), O(n)=n, O(n log n)=n*log2(n), O(n^2)=n^2, O(n^3)=n^3, O(2^n)=min(2^n, 1e9), O(n!)=min(factorial(n), 1e9).
 
 Return ONLY valid JSON, no markdown, no extra text."""
 
@@ -162,22 +136,10 @@ def parse_json_response(text: str) -> dict:
     return json.loads(text)
 
 
-def generate(prompt: str, system: str = "", temperature: float = 0.3) -> str:
-    full_prompt = f"{system}\n\n{prompt}" if system else prompt
-    response = model.generate_content(
-        full_prompt,
-        generation_config=genai.GenerationConfig(
-            temperature=temperature,
-            max_output_tokens=8192,
-        ),
-    )
-    return response.text
-
-
 @app.post("/api/analyze", response_model=AnalysisResponse)
 async def analyze_code(request: CodeRequest):
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
 
     platform_context = ""
     if request.platform:
@@ -194,12 +156,19 @@ async def analyze_code(request: CodeRequest):
 
 {platform_context}
 
-Provide ALL fields: complexity, graphs, suggestions, optimized code, bottlenecks, patterns, annotations, heatmap, tests, performance, quality, animation, difficulty estimate, learning path, ELI5 explanation, similar problems, multiple approaches, and a Mermaid flowchart.
-
-Return as valid JSON only."""
+Provide ALL fields. Return as valid JSON only."""
 
     try:
-        content = generate(user_prompt, SYSTEM_PROMPT, 0.3)
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=4096,
+        )
+        content = response.choices[0].message.content.strip()
         result = parse_json_response(content)
         return AnalysisResponse(
             time_complexity=result.get("time_complexity", "O(n)"),
@@ -235,8 +204,8 @@ Return as valid JSON only."""
 
 @app.post("/api/chat")
 async def chat_with_ai(request: ChatRequest):
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
 
     context = ""
     if request.analysis_context:
@@ -262,12 +231,16 @@ The user asks: {request.message}
 Provide a helpful, concise answer. If suggesting code changes, show the code."""
 
     try:
-        content = generate(
-            user_prompt,
-            "You are a helpful coding assistant. Answer questions about code, suggest improvements, explain concepts, and help with debugging. Be concise but thorough. Use markdown formatting for code blocks.",
-            0.5,
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "You are a helpful coding assistant. Answer questions about code, suggest improvements, explain concepts, and help with debugging. Be concise but thorough. Use markdown formatting for code blocks."},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.5,
+            max_tokens=2048,
         )
-        return {"response": content.strip()}
+        return {"response": response.choices[0].message.content.strip()}
     except Exception as e:
         print(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -275,16 +248,21 @@ Provide a helpful, concise answer. If suggesting code changes, show the code."""
 
 @app.post("/api/translate")
 async def translate_code(request: MultiLangRequest):
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
     langs = ", ".join(request.target_languages)
     user_prompt = f"Translate this {request.source_language} code to: {langs}\n\n```{request.source_language}\n{request.code}\n```\n\nReturn JSON with translations and notes for each language."
     try:
-        content = generate(
-            user_prompt,
-            'Translate code between languages. Return JSON: {"translations": {"lang": "code"}, "notes": {"lang": "notes"}}',
-            0.3,
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "Translate code between languages. Return JSON: {\"translations\": {\"lang\": \"code\"}, \"notes\": {\"lang\": \"notes\"}}"},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=4096,
         )
+        content = response.choices[0].message.content.strip()
         return parse_json_response(content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -303,44 +281,28 @@ async def upload_file(file: UploadFile = File(...)):
 
 @app.post("/api/code-smells")
 async def detect_code_smells(request: CodeReviewRequest):
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
 
-    prompt = f"""Analyze this {request.language} code for code smells and anti-patterns.
+    prompt = f"""Analyze this {request.language} code for code smells.
 
 ```{request.language}
 {request.code}
 ```
 
-Return JSON with:
-{{
-    "smells": [
-        {{
-            "name": "Smell name",
-            "severity": "critical/warning/info",
-            "line": 5,
-            "description": "What's wrong",
-            "suggestion": "How to fix it",
-            "category": "naming/complexity/duplication/length/coupling/bloat"
-        }}
-    ],
-    "summary": {{
-        "total_smells": 5,
-        "critical": 1,
-        "warnings": 2,
-        "info": 2,
-        "health_score": 75,
-        "verdict": "Good/Fair/Poor"
-    }}
-}}
-Return ONLY valid JSON."""
+Return JSON with "smells" array and "summary" object. Return ONLY valid JSON."""
 
     try:
-        content = generate(
-            prompt,
-            "You are a code quality expert. Detect code smells, anti-patterns, and bad practices. Return valid JSON only.",
-            0.3,
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "You are a code quality expert. Return valid JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            max_tokens=4096,
         )
+        content = response.choices[0].message.content.strip()
         return parse_json_response(content)
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="Failed to parse response")
@@ -350,8 +312,8 @@ Return ONLY valid JSON."""
 
 @app.post("/api/metrics")
 async def get_code_metrics(request: CodeReviewRequest):
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
 
     prompt = f"""Analyze this {request.language} code and calculate all code metrics.
 
@@ -359,50 +321,19 @@ async def get_code_metrics(request: CodeReviewRequest):
 {request.code}
 ```
 
-Return JSON with:
-{{
-    "metrics": {{
-        "lines_of_code": 50,
-        "blank_lines": 5,
-        "comment_lines": 3,
-        "code_lines": 42,
-        "functions": 3,
-        "classes": 1,
-        "avg_function_length": 14,
-        "max_function_length": 25,
-        "avg_params_per_function": 2,
-        "max_nesting_depth": 3,
-        "cyclomatic_complexity": 8,
-        "cognitive_complexity": 12,
-        "maintainability_index": 72,
-        "halstead_volume": 150,
-        "difficulty": 8.5,
-        "effort": 1275
-    }},
-    "ratings": {{
-        "maintainability": "good/fair/poor",
-        "readability": "good/fair/poor",
-        "complexity": "low/medium/high",
-        "testability": "easy/moderate/hard"
-    }},
-    "breakdown": [
-        {{
-            "function_name": "functionName",
-            "lines": 15,
-            "cyclomatic": 3,
-            "parameters": 2,
-            "nesting": 2
-        }}
-    ]
-}}
-Return ONLY valid JSON."""
+Return JSON with "metrics", "ratings", and "breakdown". Return ONLY valid JSON."""
 
     try:
-        content = generate(
-            prompt,
-            "You are a code metrics expert. Calculate all standard code metrics. Return valid JSON only.",
-            0.3,
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "You are a code metrics expert. Return valid JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            max_tokens=4096,
         )
+        content = response.choices[0].message.content.strip()
         return parse_json_response(content)
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="Failed to parse response")
@@ -412,64 +343,28 @@ Return ONLY valid JSON."""
 
 @app.post("/api/code-review")
 async def code_review(request: CodeReviewRequest):
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
 
-    prompt = f"""Perform a thorough code review on this {request.language} code. Act like a senior developer reviewing a pull request.
+    prompt = f"""Perform a code review on this {request.language} code.
 
 ```{request.language}
 {request.code}
 ```
 
-Return JSON with:
-{{
-    "review": {{
-        "overall_rating": 1-5,
-        "summary": "One paragraph summary of the review",
-        "verdict": "APPROVE / REQUEST_CHANGES / COMMENT"
-    }},
-    "issues": [
-        {{
-            "severity": "critical/major/minor/suggestion",
-            "line": 5,
-            "category": "bug/security/performance/style/architecture",
-            "title": "Issue title",
-            "description": "Detailed description",
-            "suggestion": "How to fix it",
-            "code_suggestion": "Optional fixed code"
-        }}
-    ],
-    "highlights": [
-        {{
-            "line": 10,
-            "comment": "What's done well here"
-        }}
-    ],
-    "security": {{
-        "vulnerabilities": [
-            {{
-                "type": "Vulnerability type",
-                "severity": "critical/high/medium/low",
-                "line": 5,
-                "description": "What's the risk",
-                "fix": "How to fix it"
-            }}
-        ],
-        "score": 85
-    }},
-    "best_practices": [
-        "Practice 1",
-        "Practice 2"
-    ]
-}}
-Return ONLY valid JSON."""
+Return JSON with "review", "issues", "highlights", "security", "best_practices". Return ONLY valid JSON."""
 
     try:
-        content = generate(
-            prompt,
-            "You are a senior code reviewer. Review code thoroughly for bugs, security, performance, style, and architecture. Return valid JSON only.",
-            0.3,
+        response = client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {"role": "system", "content": "You are a senior code reviewer. Return valid JSON only."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.3,
+            max_tokens=4096,
         )
+        content = response.choices[0].message.content.strip()
         return parse_json_response(content)
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="Failed to parse response")
@@ -479,7 +374,7 @@ Return ONLY valid JSON."""
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "gemini_configured": bool(GEMINI_API_KEY)}
+    return {"status": "ok", "openrouter_configured": bool(OPENROUTER_API_KEY)}
 
 
 if __name__ == "__main__":
