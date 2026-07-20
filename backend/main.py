@@ -28,7 +28,7 @@ if OPENROUTER_API_KEY:
         base_url="https://openrouter.ai/api/v1",
     )
 
-MODEL = "meta-llama/llama-3.1-8b-instruct:free"
+MODEL = "meta-llama/llama-3.2-3b-instruct:free"
 
 
 class CodeRequest(BaseModel):
