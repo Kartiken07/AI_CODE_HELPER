@@ -28,7 +28,7 @@ if OPENROUTER_API_KEY:
         base_url="https://openrouter.ai/api/v1",
     )
 
-MODEL = "openrouter/free"
+MODEL = "nvidia/nemotron-3-super-120b-a12b:free"
 
 
 class CodeRequest(BaseModel):
@@ -135,7 +135,18 @@ def parse_json_response(text: str) -> dict:
         if text.endswith("```"):
             text = text[:-3]
         text = text.strip()
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        if start != -1 and end > start:
+            return json.loads(text[start:end])
+        start = text.find("[")
+        end = text.rfind("]") + 1
+        if start != -1 and end > start:
+            return json.loads(text[start:end])
+        raise
 
 
 @app.post("/api/analyze", response_model=AnalysisResponse)
