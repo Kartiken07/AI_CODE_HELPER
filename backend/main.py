@@ -5,7 +5,7 @@ from typing import Optional
 import os
 import json
 from dotenv import load_dotenv
-from openai import OpenAI
+import google.generativeai as genai
 
 load_dotenv()
 
@@ -19,12 +19,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
-client = OpenAI(
-    api_key=GROQ_API_KEY,
-    base_url="https://api.groq.com/openai/v1",
-)
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel("gemini-2.0-flash")
 
 
 class CodeRequest(BaseModel):
@@ -154,10 +152,32 @@ For graph data: O(1)=1, O(log n)=log2(n), O(n)=n, O(n log n)=n*log2(n), O(n^2)=n
 Return ONLY valid JSON, no markdown, no extra text."""
 
 
+def parse_json_response(text: str) -> dict:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
+    return json.loads(text)
+
+
+def generate(prompt: str, system: str = "", temperature: float = 0.3) -> str:
+    full_prompt = f"{system}\n\n{prompt}" if system else prompt
+    response = model.generate_content(
+        full_prompt,
+        generation_config=genai.GenerationConfig(
+            temperature=temperature,
+            max_output_tokens=8192,
+        ),
+    )
+    return response.text
+
+
 @app.post("/api/analyze", response_model=AnalysisResponse)
 async def analyze_code(request: CodeRequest):
-    if not GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
 
     platform_context = ""
     if request.platform:
@@ -179,22 +199,8 @@ Provide ALL fields: complexity, graphs, suggestions, optimized code, bottlenecks
 Return as valid JSON only."""
 
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.3,
-            max_tokens=8192,
-        )
-        content = response.choices[0].message.content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1]
-            if content.endswith("```"):
-                content = content[:-3]
-            content = content.strip()
-        result = json.loads(content)
+        content = generate(user_prompt, SYSTEM_PROMPT, 0.3)
+        result = parse_json_response(content)
         return AnalysisResponse(
             time_complexity=result.get("time_complexity", "O(n)"),
             space_complexity=result.get("space_complexity", "O(n)"),
@@ -229,8 +235,8 @@ Return as valid JSON only."""
 
 @app.post("/api/chat")
 async def chat_with_ai(request: ChatRequest):
-    if not GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
 
     context = ""
     if request.analysis_context:
@@ -256,16 +262,12 @@ The user asks: {request.message}
 Provide a helpful, concise answer. If suggesting code changes, show the code."""
 
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "You are a helpful coding assistant. Answer questions about code, suggest improvements, explain concepts, and help with debugging. Be concise but thorough. Use markdown formatting for code blocks."},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.5,
-            max_tokens=2048,
+        content = generate(
+            user_prompt,
+            "You are a helpful coding assistant. Answer questions about code, suggest improvements, explain concepts, and help with debugging. Be concise but thorough. Use markdown formatting for code blocks.",
+            0.5,
         )
-        return {"response": response.choices[0].message.content.strip()}
+        return {"response": content.strip()}
     except Exception as e:
         print(f"Chat error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -273,26 +275,17 @@ Provide a helpful, concise answer. If suggesting code changes, show the code."""
 
 @app.post("/api/translate")
 async def translate_code(request: MultiLangRequest):
-    if not GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
     langs = ", ".join(request.target_languages)
     user_prompt = f"Translate this {request.source_language} code to: {langs}\n\n```{request.source_language}\n{request.code}\n```\n\nReturn JSON with translations and notes for each language."
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "Translate code between languages. Return JSON: {\"translations\": {\"lang\": \"code\"}, \"notes\": {\"lang\": \"notes\"}}"},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.3,
-            max_tokens=4096,
+        content = generate(
+            user_prompt,
+            'Translate code between languages. Return JSON: {"translations": {"lang": "code"}, "notes": {"lang": "notes"}}',
+            0.3,
         )
-        content = response.choices[0].message.content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1]
-            if content.endswith("```"):
-                content = content[:-3]
-        return json.loads(content.strip())
+        return parse_json_response(content)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -310,8 +303,8 @@ async def upload_file(file: UploadFile = File(...)):
 
 @app.post("/api/code-smells")
 async def detect_code_smells(request: CodeReviewRequest):
-    if not GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
 
     prompt = f"""Analyze this {request.language} code for code smells and anti-patterns.
 
@@ -343,21 +336,12 @@ Return JSON with:
 Return ONLY valid JSON."""
 
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "You are a code quality expert. Detect code smells, anti-patterns, and bad practices. Return valid JSON only."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-            max_tokens=4096,
+        content = generate(
+            prompt,
+            "You are a code quality expert. Detect code smells, anti-patterns, and bad practices. Return valid JSON only.",
+            0.3,
         )
-        content = response.choices[0].message.content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1]
-            if content.endswith("```"):
-                content = content[:-3]
-        return json.loads(content.strip())
+        return parse_json_response(content)
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="Failed to parse response")
     except Exception as e:
@@ -366,8 +350,8 @@ Return ONLY valid JSON."""
 
 @app.post("/api/metrics")
 async def get_code_metrics(request: CodeReviewRequest):
-    if not GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
 
     prompt = f"""Analyze this {request.language} code and calculate all code metrics.
 
@@ -414,21 +398,12 @@ Return JSON with:
 Return ONLY valid JSON."""
 
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "You are a code metrics expert. Calculate all standard code metrics. Return valid JSON only."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-            max_tokens=4096,
+        content = generate(
+            prompt,
+            "You are a code metrics expert. Calculate all standard code metrics. Return valid JSON only.",
+            0.3,
         )
-        content = response.choices[0].message.content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1]
-            if content.endswith("```"):
-                content = content[:-3]
-        return json.loads(content.strip())
+        return parse_json_response(content)
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="Failed to parse response")
     except Exception as e:
@@ -437,8 +412,8 @@ Return ONLY valid JSON."""
 
 @app.post("/api/code-review")
 async def code_review(request: CodeReviewRequest):
-    if not GROQ_API_KEY:
-        raise HTTPException(status_code=500, detail="GROQ_API_KEY not configured")
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY not configured")
 
     prompt = f"""Perform a thorough code review on this {request.language} code. Act like a senior developer reviewing a pull request.
 
@@ -490,21 +465,12 @@ Return JSON with:
 Return ONLY valid JSON."""
 
     try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "You are a senior code reviewer. Review code thoroughly for bugs, security, performance, style, and architecture. Return valid JSON only."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.3,
-            max_tokens=4096,
+        content = generate(
+            prompt,
+            "You are a senior code reviewer. Review code thoroughly for bugs, security, performance, style, and architecture. Return valid JSON only.",
+            0.3,
         )
-        content = response.choices[0].message.content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[1]
-            if content.endswith("```"):
-                content = content[:-3]
-        return json.loads(content.strip())
+        return parse_json_response(content)
     except json.JSONDecodeError:
         raise HTTPException(status_code=500, detail="Failed to parse response")
     except Exception as e:
@@ -513,7 +479,7 @@ Return ONLY valid JSON."""
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "groq_configured": bool(GROQ_API_KEY)}
+    return {"status": "ok", "gemini_configured": bool(GEMINI_API_KEY)}
 
 
 if __name__ == "__main__":
