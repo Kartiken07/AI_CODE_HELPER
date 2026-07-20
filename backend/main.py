@@ -21,10 +21,12 @@ app.add_middleware(
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
-client = OpenAI(
-    api_key=OPENROUTER_API_KEY,
-    base_url="https://openrouter.ai/api/v1",
-)
+client = None
+if OPENROUTER_API_KEY:
+    client = OpenAI(
+        api_key=OPENROUTER_API_KEY,
+        base_url="https://openrouter.ai/api/v1",
+    )
 
 MODEL = "meta-llama/llama-3.1-8b-instruct:free"
 
@@ -138,7 +140,7 @@ def parse_json_response(text: str) -> dict:
 
 @app.post("/api/analyze", response_model=AnalysisResponse)
 async def analyze_code(request: CodeRequest):
-    if not OPENROUTER_API_KEY:
+    if not client:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
 
     platform_context = ""
@@ -204,7 +206,7 @@ Provide ALL fields. Return as valid JSON only."""
 
 @app.post("/api/chat")
 async def chat_with_ai(request: ChatRequest):
-    if not OPENROUTER_API_KEY:
+    if not client:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
 
     context = ""
@@ -248,7 +250,7 @@ Provide a helpful, concise answer. If suggesting code changes, show the code."""
 
 @app.post("/api/translate")
 async def translate_code(request: MultiLangRequest):
-    if not OPENROUTER_API_KEY:
+    if not client:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
     langs = ", ".join(request.target_languages)
     user_prompt = f"Translate this {request.source_language} code to: {langs}\n\n```{request.source_language}\n{request.code}\n```\n\nReturn JSON with translations and notes for each language."
@@ -281,7 +283,7 @@ async def upload_file(file: UploadFile = File(...)):
 
 @app.post("/api/code-smells")
 async def detect_code_smells(request: CodeReviewRequest):
-    if not OPENROUTER_API_KEY:
+    if not client:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
 
     prompt = f"""Analyze this {request.language} code for code smells.
@@ -312,7 +314,7 @@ Return JSON with "smells" array and "summary" object. Return ONLY valid JSON."""
 
 @app.post("/api/metrics")
 async def get_code_metrics(request: CodeReviewRequest):
-    if not OPENROUTER_API_KEY:
+    if not client:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
 
     prompt = f"""Analyze this {request.language} code and calculate all code metrics.
@@ -343,7 +345,7 @@ Return JSON with "metrics", "ratings", and "breakdown". Return ONLY valid JSON."
 
 @app.post("/api/code-review")
 async def code_review(request: CodeReviewRequest):
-    if not OPENROUTER_API_KEY:
+    if not client:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
 
     prompt = f"""Perform a code review on this {request.language} code.
@@ -374,7 +376,7 @@ Return JSON with "review", "issues", "highlights", "security", "best_practices".
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "openrouter_configured": bool(OPENROUTER_API_KEY)}
+    return {"status": "ok", "openrouter_configured": client is not None}
 
 
 if __name__ == "__main__":
